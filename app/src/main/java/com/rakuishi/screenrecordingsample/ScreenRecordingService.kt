@@ -1,6 +1,7 @@
 package com.rakuishi.screenrecordingsample
 
 import android.app.*
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.hardware.display.DisplayManager
@@ -11,12 +12,16 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
+import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.daasuu.mp4compose.FillMode
 import com.daasuu.mp4compose.composer.Mp4Composer
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+
 
 class ScreenRecordingService : Service() {
 
@@ -63,6 +68,10 @@ class ScreenRecordingService : Service() {
         }
     }
 
+    // /storage/emulated/0/Android/data/*/cache/screen_recording
+    private val cacheDirPath: String by lazy {
+        "${externalCacheDir?.path}${File.separator}screen_recording"
+    }
     private var originalMp4File: File? = null
     private var mp4ComposeredMp4File: File? = null
 
@@ -124,6 +133,8 @@ class ScreenRecordingService : Service() {
     }
 
     private fun startRecording(intent: Intent) {
+        removeCache()
+
         val metrics = resources.displayMetrics
 
         val projectionManager =
@@ -210,6 +221,8 @@ class ScreenRecordingService : Service() {
 
     private fun notifySuccess(file: File) {
         runOnUiThread {
+            saveMp4ToMoviesDir(file)
+
             Toast.makeText(this, "Success: Screen Recording", Toast.LENGTH_SHORT)
                 .show()
 
@@ -235,11 +248,51 @@ class ScreenRecordingService : Service() {
     }
 
     private fun createMp4File(): File {
-        // /storage/emulated/0/Android/data/com.rakuishi.screenrecordingsample/cache/*.mp4
-        val dir = File("${externalCacheDir?.path}/screen_recording/")
+        val dir = File(cacheDirPath)
         if (!dir.exists()) {
             dir.mkdir()
         }
-        return File("${externalCacheDir?.path}/screen_recording/${System.currentTimeMillis()}.mp4")
+        return File("$cacheDirPath${File.separator}${System.currentTimeMillis()}.mp4")
+    }
+
+    private fun removeCache() {
+        File(cacheDirPath).deleteRecursively()
+    }
+
+    private fun saveMp4ToMoviesDir(file: File) {
+        // ContentResolver
+        val values = ContentValues()
+        val current = System.currentTimeMillis()
+        values.put(MediaStore.Video.Media.TITLE, file.name)
+        values.put(MediaStore.Video.Media.DATE_ADDED, (current / 1000).toInt())
+        values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+        values.put(MediaStore.Video.Media.IS_PENDING, 1)
+
+        val contentResolver = contentResolver
+        val base = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        val newUri = contentResolver.insert(base, values)!!
+
+        try {
+            val pfd = contentResolver.openFileDescriptor(newUri, "w")!!
+            val outputStream = FileOutputStream(pfd.fileDescriptor)
+            val inputStream = FileInputStream(file)
+
+            val buf = ByteArray(1024)
+            var len: Int
+            do {
+                len = inputStream.read(buf)
+                outputStream.write(buf, 0, len)
+            } while (len > 0)
+            outputStream.close()
+            inputStream.close()
+            pfd.close()
+
+            Log.d(TAG, "Success: replaceMp4ToMovies")
+        } catch (e: java.lang.Exception) {
+            Log.d(TAG, "Failed: replaceMp4ToMovies")
+        }
+
+        values.put(MediaStore.Video.Media.IS_PENDING, 0)
+        contentResolver.update(newUri, values, null, null)
     }
 }
